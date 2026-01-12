@@ -1,0 +1,158 @@
+openapi: 3.0.0
+info:
+  title: ProjectManagement
+  description: APIs for managing roofing projects and crew assignments
+  version: 1.0.0
+
+paths:
+  /createProject:
+    post:
+      operationId: createProject
+      summary: Create a new roofing project
+      description: Creates a new project for tracking a roofing job. Use this when a user mentions starting a new job, creating a project, or working on a new property.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  description: The name of the project, often the property address (e.g., "123 Oak St")
+                address:
+                  type: string
+                  description: The full address of the property
+                customer_name:
+                  type: string
+                  description: Name of the homeowner or customer
+                customer_phone:
+                  type: string
+                  description: Phone number of the customer
+                notes:
+                  type: string
+                  description: Any additional notes about the project
+      responses:
+        '200':
+          description: Project created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  project_id:
+                    type: string
+                  project:
+                    type: object
+
+  /getProject:
+    get:
+      operationId: getProject
+      summary: Get details of a specific project
+      description: Retrieves full details of a project including assigned crew members. Use this when a user asks about a specific project's status, details, or crew.
+      parameters:
+        - name: project_id
+          in: query
+          schema:
+            type: string
+          description: The unique ID of the project
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: Search for project by name (partial match). Use this when the user refers to a project by address or name.
+      responses:
+        '200':
+          description: Project details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project:
+                    type: object
+
+  /listProjects:
+    get:
+      operationId: listProjects
+      summary: List all projects
+      description: Returns a list of projects, optionally filtered by status. Use this when a user asks "what are my projects", "what jobs do we have", or similar.
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [lead, scheduled, active, completed, on_hold]
+          description: Filter by project status
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+          description: Maximum number of projects to return
+      responses:
+        '200':
+          description: List of projects
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+
+  /assignCrewMember:
+    post:
+      operationId: assignCrewMember
+      summary: Assign a crew member to a project
+      description: Assigns a person to work on a project. If the person doesn't exist, creates them as a new crew member. Use this when a user says things like "add Joe to Oak St" or "assign 555-1234 to the Miller job".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - phone_number
+              properties:
+                project_id:
+                  type: string
+                  description: The ID of the project
+                project_name:
+                  type: string
+                  description: The name of the project (used if project_id not provided)
+                phone_number:
+                  type: string
+                  description: The phone number of the crew member (required)
+                name:
+                  type: string
+                  description: The name of the crew member
+                role:
+                  type: string
+                  enum: [lead, crew]
+                  default: crew
+                  description: Role on the project
+      responses:
+        '200':
+          description: Crew member assigned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  user_id:
+                    type: string
+                  project_id:
+                    type: string
+                  is_new_user:
+                    type: boolean

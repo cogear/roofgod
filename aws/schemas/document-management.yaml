@@ -1,0 +1,108 @@
+openapi: 3.0.0
+info:
+  title: DocumentManagement
+  description: APIs for storing, retrieving, and searching documents
+  version: 1.0.0
+
+paths:
+  /searchDocuments:
+    get:
+      operationId: searchDocuments
+      summary: Search for documents
+      description: Search for documents by query text, project name, or document type. Use this when a user asks "find the permit for Oak St", "do we have the invoice", or "show me photos from the Miller job".
+      parameters:
+        - name: query
+          in: query
+          schema:
+            type: string
+          description: Search text to match against filenames and document content
+        - name: project_name
+          in: query
+          schema:
+            type: string
+          description: Filter documents by project name (partial match)
+        - name: document_type
+          in: query
+          schema:
+            type: string
+            enum: [permit, invoice, receipt, photo, insurance_scope, change_order]
+          description: Filter by document type
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+          description: Maximum number of documents to return
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        filename:
+                          type: string
+                        document_type:
+                          type: string
+                        created_at:
+                          type: string
+                        metadata:
+                          type: object
+                  count:
+                    type: integer
+
+  /storeDocument:
+    post:
+      operationId: storeDocument
+      summary: Store a new document
+      description: Stores a document in S3 and records metadata. Use this when processing uploaded files or when the user sends a document via WhatsApp.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - filename
+              properties:
+                filename:
+                  type: string
+                  description: Name of the file
+                document_type:
+                  type: string
+                  enum: [permit, invoice, receipt, photo, insurance_scope, change_order, general]
+                  description: Type/category of the document
+                project_id:
+                  type: string
+                  description: ID of the associated project
+                project_name:
+                  type: string
+                  description: Name of the associated project (used if project_id not provided)
+                content:
+                  type: string
+                  description: Base64 encoded file content
+                extracted_text:
+                  type: string
+                  description: Text extracted from the document (OCR result)
+      responses:
+        '200':
+          description: Document stored successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  document_id:
+                    type: string
+                  s3_key:
+                    type: string
