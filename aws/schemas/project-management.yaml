@@ -109,6 +109,60 @@ paths:
                   count:
                     type: integer
 
+  /updateProject:
+    post:
+      operationId: updateProject
+      summary: Update an existing project
+      description: Updates project details like status, address, customer info, or notes. Use this when a user says "mark Oak St as done", "update the address for Pine St", or "Oak St is on hold".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                project_id:
+                  type: string
+                  description: The ID of the project to update
+                project_name:
+                  type: string
+                  description: The name of the project (used if project_id not provided)
+                name:
+                  type: string
+                  description: New name for the project
+                address:
+                  type: string
+                  description: Updated address
+                customer_name:
+                  type: string
+                  description: Updated customer name
+                customer_phone:
+                  type: string
+                  description: Updated customer phone
+                status:
+                  type: string
+                  enum: [lead, scheduled, active, completed, on_hold]
+                  description: New status for the project
+                notes:
+                  type: string
+                  description: Updated notes
+                start_date:
+                  type: string
+                  format: date
+                  description: Project start date
+      responses:
+        '200':
+          description: Project updated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  project:
+                    type: object
+
   /assignCrewMember:
     post:
       operationId: assignCrewMember
@@ -156,3 +210,121 @@ paths:
                     type: string
                   is_new_user:
                     type: boolean
+
+  /inviteCrewMember:
+    post:
+      operationId: inviteCrewMember
+      summary: Invite a new crew member to join
+      description: Sends an invitation to a phone number to join the team. The person will receive a WhatsApp message. Use this when a manager wants to add someone new, like "invite 555-1234" or "add Mike 555-9999 to the team".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - phone_number
+              properties:
+                phone_number:
+                  type: string
+                  description: The phone number to invite (required)
+                name:
+                  type: string
+                  description: The name of the person being invited
+                project_id:
+                  type: string
+                  description: Optionally assign to a project immediately
+                project_name:
+                  type: string
+                  description: Optionally assign to a project by name
+                role:
+                  type: string
+                  enum: [lead, crew]
+                  default: crew
+                  description: The role they'll have
+                message:
+                  type: string
+                  description: Custom message to include in the invitation
+      responses:
+        '200':
+          description: Invitation sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  invitation_id:
+                    type: string
+                  invitation_code:
+                    type: string
+                  already_member:
+                    type: boolean
+
+  /listInvitations:
+    get:
+      operationId: listInvitations
+      summary: List pending invitations
+      description: Shows all pending invitations. Use when a user asks "who have I invited" or "pending invitations".
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, accepted, expired, cancelled]
+            default: pending
+          description: Filter by invitation status
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+          description: Maximum number of invitations to return
+      responses:
+        '200':
+          description: List of invitations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitations:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+
+  /setCurrentProject:
+    post:
+      operationId: setCurrentProject
+      summary: Set the current working project for context
+      description: Sets which project the conversation is currently about. Use this when a user says "let's talk about Oak St" or "working on Pine St now".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                project_id:
+                  type: string
+                  description: The ID of the project
+                project_name:
+                  type: string
+                  description: The name of the project (partial match)
+      responses:
+        '200':
+          description: Current project set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  project_id:
+                    type: string
+                  project_name:
+                    type: string

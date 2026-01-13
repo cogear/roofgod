@@ -3,8 +3,12 @@ import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as snsSubscriptions from "aws-cdk-lib/aws-sns-subscriptions";
+import * as sqs from "aws-cdk-lib/aws-sqs";
+import * as sqsSubscriptions from "aws-cdk-lib/aws-lambda-event-sources";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as events from "aws-cdk-lib/aws-events";
+import * as targets from "aws-cdk-lib/aws-events-targets";
 import { Construct } from "constructs";
 import * as path from "path";
 
@@ -40,6 +44,31 @@ export class RoofGodStack extends cdk.Stack {
           access_token: "YOUR_WHATSAPP_ACCESS_TOKEN",
         }),
         generateStringKey: "placeholder",
+      },
+    });
+
+    // Gmail OAuth credentials
+    const gmailSecret = new secretsmanager.Secret(this, "GmailSecret", {
+      secretName: "roofgod/gmail",
+      description: "Gmail OAuth credentials",
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({
+          client_id: "YOUR_GOOGLE_CLIENT_ID",
+          client_secret: "YOUR_GOOGLE_CLIENT_SECRET",
+        }),
+        generateStringKey: "placeholder",
+      },
+    });
+
+    // Token encryption key for storing OAuth tokens
+    const encryptionKeySecret = new secretsmanager.Secret(this, "EncryptionKeySecret", {
+      secretName: "roofgod/encryption-key",
+      description: "Encryption key for OAuth tokens",
+      generateSecretString: {
+        secretStringTemplate: JSON.stringify({}),
+        generateStringKey: "key",
+        excludePunctuation: true,
+        passwordLength: 64,
       },
     });
 
@@ -101,7 +130,12 @@ export class RoofGodStack extends cdk.Stack {
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
         actions: ["secretsmanager:GetSecretValue"],
-        resources: [supabaseSecret.secretArn, whatsappSecret.secretArn],
+        resources: [
+          supabaseSecret.secretArn,
+          whatsappSecret.secretArn,
+          gmailSecret.secretArn,
+          encryptionKeySecret.secretArn,
+        ],
       })
     );
 
@@ -165,6 +199,112 @@ export class RoofGodStack extends cdk.Stack {
     });
 
     // ========================================
+    // GMAIL POLLER LAMBDA
+    // ========================================
+
+    const gmailPollerLambda = new lambda.Function(this, "GmailPollerLambda", {
+      functionName: "roofgod-gmail-poller",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../lambda/gmail-poller")),
+      role: lambdaRole,
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
+      environment: {
+        SUPABASE_SECRET_ARN: supabaseSecret.secretArn,
+        WHATSAPP_SECRET_ARN: whatsappSecret.secretArn,
+        ENCRYPTION_KEY_SECRET_ARN: encryptionKeySecret.secretArn,
+        GOOGLE_GMAIL_CLIENT_ID: "FROM_GMAIL_SECRET",
+        GOOGLE_GMAIL_CLIENT_SECRET: "FROM_GMAIL_SECRET",
+      },
+    });
+
+    // Schedule Gmail poller to run every 15 minutes
+    const gmailPollerSchedule = new events.Rule(this, "GmailPollerSchedule", {
+      ruleName: "roofgod-gmail-poller-schedule",
+      description: "Triggers Gmail poller every 15 minutes",
+      schedule: events.Schedule.rate(cdk.Duration.minutes(15)),
+    });
+
+    gmailPollerSchedule.addTarget(new targets.LambdaFunction(gmailPollerLambda));
+
+    // ========================================
+    // DOCUMENT PROCESSING QUEUE & LAMBDA
+    // ========================================
+
+    // Dead letter queue for failed document processing
+    const documentDLQ = new sqs.Queue(this, "DocumentProcessingDLQ", {
+      queueName: "roofgod-document-processing-dlq",
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
+    // Main document processing queue
+    const documentQueue = new sqs.Queue(this, "DocumentProcessingQueue", {
+      queueName: "roofgod-document-processing",
+      visibilityTimeout: cdk.Duration.minutes(6), // Longer than Lambda timeout
+      deadLetterQueue: {
+        queue: documentDLQ,
+        maxReceiveCount: 3,
+      },
+    });
+
+    // Grant WhatsApp webhook permission to send to queue
+    documentQueue.grantSendMessages(lambdaRole);
+
+    // Document processor Lambda
+    const documentProcessorLambda = new lambda.Function(this, "DocumentProcessorLambda", {
+      functionName: "roofgod-document-processor",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../lambda/document-processor")),
+      role: lambdaRole,
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 1024, // Higher memory for image processing
+      environment: {
+        SUPABASE_SECRET_ARN: supabaseSecret.secretArn,
+        WHATSAPP_SECRET_ARN: whatsappSecret.secretArn,
+        DOCUMENTS_BUCKET: documentsBucket.bucketName,
+      },
+    });
+
+    // Add SQS trigger to document processor
+    documentProcessorLambda.addEventSource(
+      new sqsSubscriptions.SqsEventSource(documentQueue, {
+        batchSize: 1, // Process one at a time for reliability
+      })
+    );
+
+    // Update WhatsApp webhook with queue URL
+    whatsappWebhookLambda.addEnvironment("DOCUMENT_QUEUE_URL", documentQueue.queueUrl);
+
+    // ========================================
+    // DAILY HUDDLE LAMBDA
+    // ========================================
+
+    const dailyHuddleLambda = new lambda.Function(this, "DailyHuddleLambda", {
+      functionName: "roofgod-daily-huddle",
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../lambda/daily-huddle")),
+      role: lambdaRole,
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
+      environment: {
+        SUPABASE_SECRET_ARN: supabaseSecret.secretArn,
+        WHATSAPP_SECRET_ARN: whatsappSecret.secretArn,
+      },
+    });
+
+    // Schedule daily huddle to run every hour (checks timezone internally)
+    const dailyHuddleSchedule = new events.Rule(this, "DailyHuddleSchedule", {
+      ruleName: "roofgod-daily-huddle-schedule",
+      description: "Triggers daily huddle Lambda every hour to check timezones",
+      schedule: events.Schedule.rate(cdk.Duration.hours(1)),
+    });
+
+    dailyHuddleSchedule.addTarget(new targets.LambdaFunction(dailyHuddleLambda));
+
+    // ========================================
     // OUTPUTS
     // ========================================
 
@@ -191,6 +331,31 @@ export class RoofGodStack extends cdk.Stack {
     new cdk.CfnOutput(this, "SupabaseSecretArn", {
       value: supabaseSecret.secretArn,
       description: "Secrets Manager ARN for Supabase credentials",
+    });
+
+    new cdk.CfnOutput(this, "GmailPollerLambdaArn", {
+      value: gmailPollerLambda.functionArn,
+      description: "Gmail Poller Lambda ARN",
+    });
+
+    new cdk.CfnOutput(this, "EncryptionKeySecretArn", {
+      value: encryptionKeySecret.secretArn,
+      description: "Secrets Manager ARN for token encryption key",
+    });
+
+    new cdk.CfnOutput(this, "DocumentProcessorLambdaArn", {
+      value: documentProcessorLambda.functionArn,
+      description: "Document Processor Lambda ARN",
+    });
+
+    new cdk.CfnOutput(this, "DocumentQueueUrl", {
+      value: documentQueue.queueUrl,
+      description: "SQS Queue URL for document processing",
+    });
+
+    new cdk.CfnOutput(this, "DailyHuddleLambdaArn", {
+      value: dailyHuddleLambda.functionArn,
+      description: "Daily Huddle Lambda ARN",
     });
   }
 }

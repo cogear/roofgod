@@ -1,0 +1,169 @@
+openapi: 3.0.0
+info:
+  title: EmailIntegration
+  description: APIs for managing email integration and querying polled emails
+  version: 1.0.0
+
+paths:
+  /listEmails:
+    get:
+      operationId: listEmails
+      summary: List recent emails
+      description: Returns a list of emails that have been polled from connected Gmail accounts. Use this when a user asks "any new emails?", "what emails came in?", or similar.
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+          description: Maximum number of emails to return
+        - name: only_important
+          in: query
+          schema:
+            type: boolean
+            default: false
+          description: Only return emails classified as important
+      responses:
+        '200':
+          description: List of emails
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  emails:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        subject:
+                          type: string
+                        from:
+                          type: string
+                        summary:
+                          type: string
+                        is_important:
+                          type: boolean
+                        received_at:
+                          type: string
+                  count:
+                    type: integer
+
+  /getEmail:
+    get:
+      operationId: getEmail
+      summary: Get full details of a specific email
+      description: Retrieves the full content of an email including the body text. Use this when a user wants to read a specific email or needs more details.
+      parameters:
+        - name: email_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The unique ID of the email
+      responses:
+        '200':
+          description: Email details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      subject:
+                        type: string
+                      from:
+                        type: string
+                      body:
+                        type: string
+                      summary:
+                        type: string
+                      is_important:
+                        type: boolean
+                      has_attachments:
+                        type: boolean
+                      received_at:
+                        type: string
+                      project:
+                        type: string
+
+  /searchEmails:
+    get:
+      operationId: searchEmails
+      summary: Search emails by keyword or project
+      description: Searches emails for matching keywords in subject, sender, or body. Can also filter by linked project. Use when a user asks "emails from Bob" or "emails about Oak St".
+      parameters:
+        - name: query
+          in: query
+          schema:
+            type: string
+          description: Search term to match in subject, sender, or body
+        - name: project_name
+          in: query
+          schema:
+            type: string
+          description: Filter emails linked to this project (partial match)
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+          description: Maximum number of results
+      responses:
+        '200':
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  emails:
+                    type: array
+                    items:
+                      type: object
+                  count:
+                    type: integer
+
+  /linkEmailToProject:
+    post:
+      operationId: linkEmailToProject
+      summary: Link an email to a project
+      description: Associates an email with a specific project for organization. Use when a user says "link that email to Oak St" or "file this under Pine St project".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email_id
+              properties:
+                email_id:
+                  type: string
+                  description: The ID of the email to link
+                project_id:
+                  type: string
+                  description: The ID of the project
+                project_name:
+                  type: string
+                  description: The name of the project (used if project_id not provided)
+      responses:
+        '200':
+          description: Email linked successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  email_id:
+                    type: string
+                  project_id:
+                    type: string

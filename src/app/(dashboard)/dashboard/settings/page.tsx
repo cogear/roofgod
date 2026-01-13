@@ -1,7 +1,26 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { GmailSettings } from "@/components/dashboard/gmail-settings";
+import { getConnectedEmailAccounts } from "@/lib/gmail/actions";
+import { createAdminClient } from "@/lib/supabase/admin";
 
-export default function SettingsPage() {
+async function getFirstTenant() {
+  const supabase = createAdminClient();
+  const { data } = await supabase
+    .from("tenants")
+    .select("id, name")
+    .limit(1)
+    .single();
+  return data;
+}
+
+export default async function SettingsPage() {
+  // For now, get the first tenant (in production, this would come from session/context)
+  const tenant = await getFirstTenant();
+  const emailAccounts = tenant
+    ? await getConnectedEmailAccounts(tenant.id)
+    : [];
+
   return (
     <div className="space-y-6">
       <div>
@@ -63,22 +82,26 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center justify-between">
-              Gmail Integration
-              <Badge variant="secondary">Not Connected</Badge>
-            </CardTitle>
-            <CardDescription>
-              Email polling and document extraction
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              Configure Google OAuth credentials for Gmail API access
-            </p>
-          </CardContent>
-        </Card>
+        {tenant ? (
+          <GmailSettings tenantId={tenant.id} accounts={emailAccounts} />
+        ) : (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                Gmail Integration
+                <Badge variant="secondary">Not Connected</Badge>
+              </CardTitle>
+              <CardDescription>
+                Email polling and document extraction
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Create a tenant first to connect Gmail
+              </p>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </div>
   );

@@ -250,6 +250,85 @@ async function listProjects(event: AgentActionEvent): Promise<AgentActionRespons
   });
 }
 
+async function updateProject(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId } = getUserContext(event);
+
+  if (!tenantId) {
+    return createResponse(event, 400, { error: "No tenant context" });
+  }
+
+  const projectId = getParameter(event, "project_id");
+  const projectName = getParameter(event, "project_name");
+
+  // Fields that can be updated
+  const name = getParameter(event, "name");
+  const address = getParameter(event, "address");
+  const customerName = getParameter(event, "customer_name");
+  const customerPhone = getParameter(event, "customer_phone");
+  const status = getParameter(event, "status");
+  const notes = getParameter(event, "notes");
+  const startDate = getParameter(event, "start_date");
+
+  // Find project
+  let targetProjectId = projectId;
+  if (!targetProjectId && projectName) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .ilike("name", `%${projectName}%`)
+      .limit(1)
+      .single();
+
+    if (project) {
+      targetProjectId = project.id;
+    } else {
+      return createResponse(event, 404, {
+        error: `Project "${projectName}" not found`,
+      });
+    }
+  }
+
+  if (!targetProjectId) {
+    return createResponse(event, 400, {
+      error: "Either project_id or project_name is required",
+    });
+  }
+
+  // Build update object with only provided fields
+  const updates: Record<string, unknown> = {};
+  if (name) updates.name = name;
+  if (address) updates.address = address;
+  if (customerName) updates.customer_name = customerName;
+  if (customerPhone) updates.customer_phone = customerPhone;
+  if (status) updates.status = status;
+  if (notes) updates.notes = notes;
+  if (startDate) updates.start_date = startDate;
+
+  if (Object.keys(updates).length === 0) {
+    return createResponse(event, 400, { error: "No fields to update" });
+  }
+
+  const { data, error } = await supabase
+    .from("projects")
+    .update(updates)
+    .eq("id", targetProjectId)
+    .eq("tenant_id", tenantId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("Error updating project:", error);
+    return createResponse(event, 500, { error: "Failed to update project" });
+  }
+
+  return createResponse(event, 200, {
+    message: `Project updated successfully`,
+    project: data,
+  });
+}
+
 async function assignCrewMember(event: AgentActionEvent): Promise<AgentActionResponse> {
   const supabase = await getSupabase();
   const { tenantId } = getUserContext(event);
@@ -340,6 +419,209 @@ async function assignCrewMember(event: AgentActionEvent): Promise<AgentActionRes
     user_id: user.id,
     project_id: targetProjectId,
     is_new_user: !user,
+  });
+}
+
+async function inviteCrewMember(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId, userId } = getUserContext(event);
+
+  if (!tenantId || !userId) {
+    return createResponse(event, 400, { error: "No tenant/user context" });
+  }
+
+  const phoneNumber = getParameter(event, "phone_number");
+  const name = getParameter(event, "name");
+  const projectId = getParameter(event, "project_id");
+  const projectName = getParameter(event, "project_name");
+  const role = getParameter(event, "role") || "crew";
+  const message = getParameter(event, "message");
+
+  if (!phoneNumber) {
+    return createResponse(event, 400, { error: "Phone number is required" });
+  }
+
+  // Find project if name provided
+  let targetProjectId = projectId;
+  if (!targetProjectId && projectName) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("id, name")
+      .eq("tenant_id", tenantId)
+      .ilike("name", `%${projectName}%`)
+      .limit(1)
+      .single();
+
+    if (project) {
+      targetProjectId = project.id;
+    }
+  }
+
+  // Check if user already exists in tenant
+  const { data: existingUser } = await supabase
+    .from("users")
+    .select("id, name")
+    .eq("tenant_id", tenantId)
+    .eq("phone_number", phoneNumber)
+    .single();
+
+  if (existingUser) {
+    // User already exists - just assign to project if specified
+    if (targetProjectId) {
+      await supabase.from("project_members").upsert({
+        project_id: targetProjectId,
+        user_id: existingUser.id,
+        role: role,
+      });
+      return createResponse(event, 200, {
+        message: `${existingUser.name} is already on your team and has been assigned to the project`,
+        user_id: existingUser.id,
+        already_member: true,
+      });
+    }
+    return createResponse(event, 200, {
+      message: `${existingUser.name} is already on your team`,
+      user_id: existingUser.id,
+      already_member: true,
+    });
+  }
+
+  // Create pending invitation
+  const { data: invitation, error } = await supabase
+    .from("pending_invitations")
+    .insert({
+      tenant_id: tenantId,
+      project_id: targetProjectId,
+      invited_by_user_id: userId,
+      phone_number: phoneNumber,
+      name: name,
+      role: role,
+      message: message,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    // Check if it's a duplicate
+    if (error.code === "23505") {
+      return createResponse(event, 200, {
+        message: `An invitation is already pending for ${phoneNumber}`,
+        already_invited: true,
+      });
+    }
+    console.error("Error creating invitation:", error);
+    return createResponse(event, 500, { error: "Failed to create invitation" });
+  }
+
+  // Get tenant name for the message
+  const { data: tenant } = await supabase
+    .from("tenants")
+    .select("name")
+    .eq("id", tenantId)
+    .single();
+
+  return createResponse(event, 200, {
+    message: `Invitation sent to ${phoneNumber}. They'll receive a WhatsApp message to join ${tenant?.name || "your team"}.`,
+    invitation_id: invitation.id,
+    invitation_code: invitation.invitation_code,
+    phone_number: phoneNumber,
+  });
+}
+
+async function listInvitations(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId } = getUserContext(event);
+
+  if (!tenantId) {
+    return createResponse(event, 400, { error: "No tenant context" });
+  }
+
+  const status = getParameter(event, "status") || "pending";
+  const limit = parseInt(getParameter(event, "limit") || "20");
+
+  const { data, error } = await supabase
+    .from("pending_invitations")
+    .select(`
+      id, phone_number, name, role, status, created_at, expires_at,
+      projects(name),
+      users!invited_by_user_id(name)
+    `)
+    .eq("tenant_id", tenantId)
+    .eq("status", status)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("Error listing invitations:", error);
+    return createResponse(event, 500, { error: "Failed to list invitations" });
+  }
+
+  return createResponse(event, 200, {
+    invitations: data,
+    count: data?.length || 0,
+  });
+}
+
+async function setCurrentProject(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId, userId } = getUserContext(event);
+
+  if (!tenantId) {
+    return createResponse(event, 400, { error: "No tenant context" });
+  }
+
+  const projectId = getParameter(event, "project_id");
+  const projectName = getParameter(event, "project_name");
+  const conversationId = event.sessionId;
+
+  // Find project
+  let targetProjectId = projectId;
+  let targetProject: { id: string; name: string } | null = null;
+
+  if (!targetProjectId && projectName) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("id, name")
+      .eq("tenant_id", tenantId)
+      .ilike("name", `%${projectName}%`)
+      .limit(1)
+      .single();
+
+    if (project) {
+      targetProjectId = project.id;
+      targetProject = project;
+    } else {
+      return createResponse(event, 404, {
+        error: `Project "${projectName}" not found`,
+      });
+    }
+  } else if (targetProjectId) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("id, name")
+      .eq("id", targetProjectId)
+      .eq("tenant_id", tenantId)
+      .single();
+
+    if (project) {
+      targetProject = project;
+    } else {
+      return createResponse(event, 404, { error: "Project not found" });
+    }
+  }
+
+  // Update conversation's current project
+  if (conversationId && targetProjectId) {
+    await supabase
+      .from("conversations")
+      .update({ current_project_id: targetProjectId })
+      .eq("id", conversationId);
+  }
+
+  return createResponse(event, 200, {
+    message: `Now working on "${targetProject?.name}"`,
+    project_id: targetProjectId,
+    project_name: targetProject?.name,
   });
 }
 
@@ -486,6 +768,406 @@ async function storeDocument(event: AgentActionEvent): Promise<AgentActionRespon
   });
 }
 
+async function getDocument(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId } = getUserContext(event);
+
+  if (!tenantId) {
+    return createResponse(event, 400, { error: "No tenant context" });
+  }
+
+  const documentId = getParameter(event, "document_id");
+
+  if (!documentId) {
+    return createResponse(event, 400, { error: "document_id is required" });
+  }
+
+  const { data, error } = await supabase
+    .from("documents")
+    .select(`
+      id, filename, document_type, extracted_text, metadata, created_at,
+      s3_key, project_id, projects(name)
+    `)
+    .eq("id", documentId)
+    .eq("tenant_id", tenantId)
+    .single();
+
+  if (error || !data) {
+    return createResponse(event, 404, { error: "Document not found" });
+  }
+
+  // Extract summary and structured data from metadata
+  const metadata = data.metadata as Record<string, unknown> || {};
+
+  return createResponse(event, 200, {
+    document: {
+      id: data.id,
+      filename: data.filename,
+      type: data.document_type,
+      extracted_text: data.extracted_text,
+      summary: metadata.summary,
+      structured_data: metadata.structured_data,
+      confidence: metadata.confidence,
+      project: data.projects?.name,
+      created_at: data.created_at,
+    },
+  });
+}
+
+async function linkDocumentToProject(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId } = getUserContext(event);
+
+  if (!tenantId) {
+    return createResponse(event, 400, { error: "No tenant context" });
+  }
+
+  const documentId = getParameter(event, "document_id");
+  const projectId = getParameter(event, "project_id");
+  const projectName = getParameter(event, "project_name");
+
+  if (!documentId) {
+    return createResponse(event, 400, { error: "document_id is required" });
+  }
+
+  // Find project
+  let targetProjectId = projectId;
+  if (!targetProjectId && projectName) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("id, name")
+      .eq("tenant_id", tenantId)
+      .ilike("name", `%${projectName}%`)
+      .limit(1)
+      .single();
+
+    if (project) {
+      targetProjectId = project.id;
+    } else {
+      return createResponse(event, 404, {
+        error: `Project "${projectName}" not found`,
+      });
+    }
+  }
+
+  if (!targetProjectId) {
+    return createResponse(event, 400, {
+      error: "Either project_id or project_name is required",
+    });
+  }
+
+  const { error } = await supabase
+    .from("documents")
+    .update({ project_id: targetProjectId })
+    .eq("id", documentId)
+    .eq("tenant_id", tenantId);
+
+  if (error) {
+    console.error("Error linking document:", error);
+    return createResponse(event, 500, { error: "Failed to link document" });
+  }
+
+  return createResponse(event, 200, {
+    message: "Document linked to project successfully",
+    document_id: documentId,
+    project_id: targetProjectId,
+  });
+}
+
+async function listDocumentsByProject(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId } = getUserContext(event);
+
+  if (!tenantId) {
+    return createResponse(event, 400, { error: "No tenant context" });
+  }
+
+  const projectId = getParameter(event, "project_id");
+  const projectName = getParameter(event, "project_name");
+  const documentType = getParameter(event, "document_type");
+
+  // Find project
+  let targetProjectId = projectId;
+  if (!targetProjectId && projectName) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .ilike("name", `%${projectName}%`)
+      .limit(1)
+      .single();
+
+    if (project) {
+      targetProjectId = project.id;
+    } else {
+      return createResponse(event, 404, {
+        error: `Project "${projectName}" not found`,
+      });
+    }
+  }
+
+  if (!targetProjectId) {
+    return createResponse(event, 400, {
+      error: "Either project_id or project_name is required",
+    });
+  }
+
+  let query = supabase
+    .from("documents")
+    .select("id, filename, document_type, created_at, metadata")
+    .eq("tenant_id", tenantId)
+    .eq("project_id", targetProjectId)
+    .order("created_at", { ascending: false });
+
+  if (documentType) {
+    query = query.eq("document_type", documentType);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error("Error listing documents:", error);
+    return createResponse(event, 500, { error: "Failed to list documents" });
+  }
+
+  return createResponse(event, 200, {
+    documents: data?.map((doc) => ({
+      id: doc.id,
+      filename: doc.filename,
+      type: doc.document_type,
+      summary: (doc.metadata as Record<string, unknown>)?.summary,
+      created_at: doc.created_at,
+    })),
+    count: data?.length || 0,
+  });
+}
+
+// ========================================
+// EMAIL INTEGRATION ACTIONS
+// ========================================
+
+async function listEmails(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId } = getUserContext(event);
+
+  if (!tenantId) {
+    return createResponse(event, 400, { error: "No tenant context" });
+  }
+
+  const limit = parseInt(getParameter(event, "limit") || "10");
+  const onlyImportant = getParameter(event, "only_important") === "true";
+  const category = getParameter(event, "category");
+
+  let query = supabase
+    .from("emails")
+    .select(`
+      id, subject, from_address, summary, is_important, has_attachments,
+      received_at, linked_project_id, projects(name)
+    `)
+    .eq("tenant_id", tenantId)
+    .order("received_at", { ascending: false })
+    .limit(limit);
+
+  if (onlyImportant) {
+    query = query.eq("is_important", true);
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error("Error listing emails:", error);
+    return createResponse(event, 500, { error: "Failed to list emails" });
+  }
+
+  return createResponse(event, 200, {
+    emails: data?.map((e) => ({
+      id: e.id,
+      subject: e.subject,
+      from: e.from_address,
+      summary: e.summary,
+      is_important: e.is_important,
+      has_attachments: e.has_attachments,
+      received_at: e.received_at,
+      project: e.projects?.name,
+    })),
+    count: data?.length || 0,
+  });
+}
+
+async function getEmail(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId } = getUserContext(event);
+
+  if (!tenantId) {
+    return createResponse(event, 400, { error: "No tenant context" });
+  }
+
+  const emailId = getParameter(event, "email_id");
+
+  if (!emailId) {
+    return createResponse(event, 400, { error: "email_id is required" });
+  }
+
+  const { data, error } = await supabase
+    .from("emails")
+    .select(`
+      id, subject, from_address, body_text, summary, is_important,
+      has_attachments, received_at, linked_project_id, projects(name)
+    `)
+    .eq("id", emailId)
+    .eq("tenant_id", tenantId)
+    .single();
+
+  if (error || !data) {
+    return createResponse(event, 404, { error: "Email not found" });
+  }
+
+  return createResponse(event, 200, {
+    email: {
+      id: data.id,
+      subject: data.subject,
+      from: data.from_address,
+      body: data.body_text,
+      summary: data.summary,
+      is_important: data.is_important,
+      has_attachments: data.has_attachments,
+      received_at: data.received_at,
+      project: data.projects?.name,
+    },
+  });
+}
+
+async function searchEmails(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId } = getUserContext(event);
+
+  if (!tenantId) {
+    return createResponse(event, 400, { error: "No tenant context" });
+  }
+
+  const searchQuery = getParameter(event, "query");
+  const projectName = getParameter(event, "project_name");
+  const limit = parseInt(getParameter(event, "limit") || "10");
+
+  if (!searchQuery && !projectName) {
+    return createResponse(event, 400, {
+      error: "Either query or project_name is required",
+    });
+  }
+
+  let query = supabase
+    .from("emails")
+    .select(`
+      id, subject, from_address, summary, is_important, received_at,
+      linked_project_id, projects(name)
+    `)
+    .eq("tenant_id", tenantId)
+    .order("received_at", { ascending: false })
+    .limit(limit);
+
+  if (searchQuery) {
+    query = query.or(
+      `subject.ilike.%${searchQuery}%,from_address.ilike.%${searchQuery}%,body_text.ilike.%${searchQuery}%`
+    );
+  }
+
+  if (projectName) {
+    // Find project first
+    const { data: projects } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("tenant_id", tenantId)
+      .ilike("name", `%${projectName}%`);
+
+    if (projects && projects.length > 0) {
+      query = query.in(
+        "linked_project_id",
+        projects.map((p) => p.id)
+      );
+    }
+  }
+
+  const { data, error } = await query;
+
+  if (error) {
+    console.error("Error searching emails:", error);
+    return createResponse(event, 500, { error: "Failed to search emails" });
+  }
+
+  return createResponse(event, 200, {
+    emails: data?.map((e) => ({
+      id: e.id,
+      subject: e.subject,
+      from: e.from_address,
+      summary: e.summary,
+      is_important: e.is_important,
+      received_at: e.received_at,
+      project: e.projects?.name,
+    })),
+    count: data?.length || 0,
+  });
+}
+
+async function linkEmailToProject(event: AgentActionEvent): Promise<AgentActionResponse> {
+  const supabase = await getSupabase();
+  const { tenantId } = getUserContext(event);
+
+  if (!tenantId) {
+    return createResponse(event, 400, { error: "No tenant context" });
+  }
+
+  const emailId = getParameter(event, "email_id");
+  const projectId = getParameter(event, "project_id");
+  const projectName = getParameter(event, "project_name");
+
+  if (!emailId) {
+    return createResponse(event, 400, { error: "email_id is required" });
+  }
+
+  // Find project
+  let targetProjectId = projectId;
+  if (!targetProjectId && projectName) {
+    const { data: project } = await supabase
+      .from("projects")
+      .select("id, name")
+      .eq("tenant_id", tenantId)
+      .ilike("name", `%${projectName}%`)
+      .limit(1)
+      .single();
+
+    if (project) {
+      targetProjectId = project.id;
+    } else {
+      return createResponse(event, 404, {
+        error: `Project "${projectName}" not found`,
+      });
+    }
+  }
+
+  if (!targetProjectId) {
+    return createResponse(event, 400, {
+      error: "Either project_id or project_name is required",
+    });
+  }
+
+  const { error } = await supabase
+    .from("emails")
+    .update({ linked_project_id: targetProjectId })
+    .eq("id", emailId)
+    .eq("tenant_id", tenantId);
+
+  if (error) {
+    console.error("Error linking email:", error);
+    return createResponse(event, 500, { error: "Failed to link email" });
+  }
+
+  return createResponse(event, 200, {
+    message: "Email linked to project successfully",
+    email_id: emailId,
+    project_id: targetProjectId,
+  });
+}
+
 // ========================================
 // MAIN HANDLER
 // ========================================
@@ -506,8 +1188,16 @@ export async function handler(event: AgentActionEvent): Promise<AgentActionRespo
           return await getProject(event);
         case "/listProjects":
           return await listProjects(event);
+        case "/updateProject":
+          return await updateProject(event);
         case "/assignCrewMember":
           return await assignCrewMember(event);
+        case "/inviteCrewMember":
+          return await inviteCrewMember(event);
+        case "/listInvitations":
+          return await listInvitations(event);
+        case "/setCurrentProject":
+          return await setCurrentProject(event);
         default:
           return createResponse(event, 404, {
             error: `Unknown API path: ${apiPath}`,
@@ -521,6 +1211,29 @@ export async function handler(event: AgentActionEvent): Promise<AgentActionRespo
           return await searchDocuments(event);
         case "/storeDocument":
           return await storeDocument(event);
+        case "/getDocument":
+          return await getDocument(event);
+        case "/linkDocumentToProject":
+          return await linkDocumentToProject(event);
+        case "/listDocumentsByProject":
+          return await listDocumentsByProject(event);
+        default:
+          return createResponse(event, 404, {
+            error: `Unknown API path: ${apiPath}`,
+          });
+      }
+    }
+
+    if (actionGroup === "EmailIntegration") {
+      switch (apiPath) {
+        case "/listEmails":
+          return await listEmails(event);
+        case "/getEmail":
+          return await getEmail(event);
+        case "/searchEmails":
+          return await searchEmails(event);
+        case "/linkEmailToProject":
+          return await linkEmailToProject(event);
         default:
           return createResponse(event, 404, {
             error: `Unknown API path: ${apiPath}`,

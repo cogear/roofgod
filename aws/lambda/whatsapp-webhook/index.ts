@@ -7,10 +7,12 @@ import {
   BedrockAgentRuntimeClient,
   InvokeAgentCommand,
 } from "@aws-sdk/client-bedrock-agent-runtime";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { createClient } from "@supabase/supabase-js";
 
 const secretsClient = new SecretsManagerClient({});
 const bedrockClient = new BedrockAgentRuntimeClient({});
+const sqsClient = new SQSClient({});
 
 // Cache for secrets
 let supabaseCredentials: { url: string; service_role_key: string } | null = null;
@@ -89,10 +91,66 @@ async function sendWhatsAppMessage(
   return response.json();
 }
 
+async function queueDocumentForProcessing(params: {
+  mediaId: string;
+  mediaType: string;
+  filename?: string;
+  tenantId: string;
+  userId?: string;
+  projectId?: string;
+  conversationId?: string;
+  messageText?: string;
+}) {
+  const queueUrl = process.env.DOCUMENT_QUEUE_URL;
+  if (!queueUrl) {
+    console.log("Document queue not configured, skipping");
+    return;
+  }
+
+  const message = {
+    type: "whatsapp_media",
+    media_id: params.mediaId,
+    media_type: params.mediaType,
+    filename: params.filename,
+    tenant_id: params.tenantId,
+    user_id: params.userId,
+    project_id: params.projectId,
+    conversation_id: params.conversationId,
+    message_text: params.messageText,
+  };
+
+  await sqsClient.send(
+    new SendMessageCommand({
+      QueueUrl: queueUrl,
+      MessageBody: JSON.stringify(message),
+    })
+  );
+
+  console.log("Queued document for processing:", params.mediaId);
+}
+
+// Persona instructions based on user role
+function getPersonaInstruction(userRole: string, isNewUser: boolean): string {
+  if (isNewUser) {
+    return `PERSONA: This is a NEW USER who hasn't been set up yet. Welcome them warmly, ask if they're a manager or crew member, and help them get connected to their company.`;
+  }
+
+  switch (userRole) {
+    case "owner":
+    case "manager":
+      return `PERSONA: This user is a MANAGER/OWNER. Provide detailed, comprehensive responses. Include financial details, timelines, analytics when relevant. Offer proactive suggestions and insights. Be professional but personable.`;
+    case "crew":
+      return `PERSONA: This user is a CREW MEMBER. Keep responses BRIEF and actionable. No financial details unless explicitly asked. Focus on what they need to do NOW. Use simple, direct language. One-line responses when possible.`;
+    default:
+      return `PERSONA: User role is unknown. Ask clarifying questions to understand who they are and how to help them.`;
+  }
+}
+
 async function invokeAgent(
   sessionId: string,
   inputText: string,
-  userContext: Record<string, unknown>
+  userContext: Record<string, unknown>,
+  projectContext?: Record<string, unknown> | null
 ): Promise<string> {
   const agentId = process.env.BEDROCK_AGENT_ID;
   const agentAliasId = process.env.BEDROCK_AGENT_ALIAS_ID;
@@ -102,15 +160,29 @@ async function invokeAgent(
     return `[Agent not configured] You said: "${inputText}"`;
   }
 
+  // Build enhanced session attributes
+  const personaInstruction = getPersonaInstruction(
+    userContext.user_role as string,
+    userContext.is_new_user as boolean
+  );
+
+  const sessionAttributes: Record<string, string> = {
+    userContext: JSON.stringify(userContext),
+    personaInstruction,
+  };
+
+  // Add project context if available
+  if (projectContext) {
+    sessionAttributes.currentProject = JSON.stringify(projectContext);
+  }
+
   const command = new InvokeAgentCommand({
     agentId,
     agentAliasId,
     sessionId,
     inputText,
     sessionState: {
-      sessionAttributes: {
-        userContext: JSON.stringify(userContext),
-      },
+      sessionAttributes,
     },
   });
 
@@ -165,15 +237,29 @@ export async function handler(event: SNSEvent, context: Context) {
             // Get message content based on type
             let messageContent = "";
             let messageType = message.type;
+            let mediaToProcess: {
+              mediaId: string;
+              mediaType: string;
+              filename?: string;
+            } | null = null;
 
             if (message.type === "text" && message.text) {
               messageContent = message.text.body;
-            } else if (message.type === "image") {
-              messageContent = "[Image received]";
+            } else if (message.type === "image" && message.image) {
+              messageContent = "[Image received - processing...]";
+              mediaToProcess = {
+                mediaId: message.image.id,
+                mediaType: message.image.mime_type,
+              };
             } else if (message.type === "audio") {
               messageContent = "[Audio received]";
-            } else if (message.type === "document") {
-              messageContent = `[Document received: ${message.document?.filename}]`;
+            } else if (message.type === "document" && message.document) {
+              messageContent = `[Document received: ${message.document.filename} - processing...]`;
+              mediaToProcess = {
+                mediaId: message.document.id,
+                mediaType: message.document.mime_type,
+                filename: message.document.filename,
+              };
             } else {
               messageContent = `[${message.type} message received]`;
             }
@@ -258,6 +344,37 @@ export async function handler(event: SNSEvent, context: Context) {
               .update({ last_message_at: new Date().toISOString() })
               .eq("id", conversationId);
 
+            // Fetch current project context if conversation has one
+            let projectContext: Record<string, unknown> | null = null;
+            const { data: conversationData } = await supabaseClient
+              .from("conversations")
+              .select("current_project_id, context")
+              .eq("id", conversationId)
+              .single();
+
+            if (conversationData?.current_project_id) {
+              const { data: projectData } = await supabaseClient
+                .from("projects")
+                .select(`
+                  id, name, address, customer_name, status, start_date, notes,
+                  project_members(user_id, role, users(name, phone_number))
+                `)
+                .eq("id", conversationData.current_project_id)
+                .single();
+
+              if (projectData) {
+                projectContext = {
+                  project_id: projectData.id,
+                  project_name: projectData.name,
+                  address: projectData.address,
+                  customer_name: projectData.customer_name,
+                  status: projectData.status,
+                  start_date: projectData.start_date,
+                  crew_count: projectData.project_members?.length || 0,
+                };
+              }
+            }
+
             // Invoke Bedrock Agent
             const startTime = Date.now();
             const userContext = {
@@ -267,6 +384,7 @@ export async function handler(event: SNSEvent, context: Context) {
               user_role: userRole,
               tenant_id: tenantId,
               is_new_user: !user,
+              conversation_context: conversationData?.context || {},
             };
 
             let agentResponse: string;
@@ -275,7 +393,8 @@ export async function handler(event: SNSEvent, context: Context) {
               agentResponse = await invokeAgent(
                 conversationId,
                 messageContent,
-                userContext
+                userContext,
+                projectContext
               );
             } catch (error) {
               console.error("Agent invocation error:", error);
@@ -307,6 +426,20 @@ export async function handler(event: SNSEvent, context: Context) {
                 p_month: currentMonth,
                 p_whatsapp_received: 1,
                 p_whatsapp_sent: 1,
+              });
+            }
+
+            // Queue media for document processing
+            if (mediaToProcess && tenantId) {
+              await queueDocumentForProcessing({
+                mediaId: mediaToProcess.mediaId,
+                mediaType: mediaToProcess.mediaType,
+                filename: mediaToProcess.filename,
+                tenantId,
+                userId: userId || undefined,
+                projectId: projectContext?.project_id as string | undefined,
+                conversationId,
+                messageText: message.type === "text" ? messageContent : undefined,
               });
             }
 

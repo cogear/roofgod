@@ -10,16 +10,12 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { getTenants } from "@/lib/dashboard/actions";
 
-export default function TenantsPage() {
-  // TODO: Fetch tenants from Supabase
-  const tenants: Array<{
-    id: string;
-    name: string;
-    subscription_status: string;
-    subscription_plan: string;
-    created_at: string;
-  }> = [];
+export const dynamic = "force-dynamic";
+
+export default async function TenantsPage() {
+  const tenants = await getTenants();
 
   return (
     <div className="space-y-6">
@@ -54,6 +50,8 @@ export default function TenantsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
+                  <TableHead>Users</TableHead>
+                  <TableHead>Projects</TableHead>
                   <TableHead>Plan</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Created</TableHead>
@@ -61,35 +59,64 @@ export default function TenantsPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {tenants.map((tenant) => (
-                  <TableRow key={tenant.id}>
-                    <TableCell className="font-medium">{tenant.name}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{tenant.subscription_plan}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <Badge
-                        variant={
-                          tenant.subscription_status === "active"
-                            ? "default"
-                            : "secondary"
-                        }
-                      >
-                        {tenant.subscription_status}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>
-                      {new Date(tenant.created_at).toLocaleDateString()}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="ghost" size="sm" asChild>
-                        <Link href={`/dashboard/tenants/${tenant.id}`}>
-                          View
-                        </Link>
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {tenants.map((tenant) => {
+                  const userCount = Array.isArray(tenant.users)
+                    ? tenant.users.length
+                    : (tenant.users as any)?.count || 0;
+                  const projectCount = Array.isArray(tenant.projects)
+                    ? tenant.projects.length
+                    : (tenant.projects as any)?.count || 0;
+
+                  return (
+                    <TableRow key={tenant.id}>
+                      <TableCell>
+                        <div>
+                          <p className="font-medium">{tenant.name}</p>
+                          {tenant.whatsapp_business_number && (
+                            <p className="text-xs text-muted-foreground">
+                              {tenant.whatsapp_business_number}
+                            </p>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{userCount}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{projectCount}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="secondary" className="capitalize">
+                          {tenant.subscription_plan || "starter"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            tenant.subscription_status === "active"
+                              ? "default"
+                              : tenant.subscription_status === "trialing"
+                              ? "secondary"
+                              : "outline"
+                          }
+                          className="capitalize"
+                        >
+                          {tenant.subscription_status || "trialing"}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {new Date(tenant.created_at).toLocaleDateString()}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="ghost" size="sm" asChild>
+                          <Link href={`/dashboard/tenants/${tenant.id}`}>
+                            View
+                          </Link>
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           )}

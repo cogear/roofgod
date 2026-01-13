@@ -106,3 +106,129 @@ paths:
                     type: string
                   s3_key:
                     type: string
+
+  /getDocument:
+    get:
+      operationId: getDocument
+      summary: Get full details of a document
+      description: Retrieves complete document details including extracted text, AI-generated summary, and structured data. Use this when a user asks to read a document or wants details about it.
+      parameters:
+        - name: document_id
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The unique ID of the document
+      responses:
+        '200':
+          description: Document details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  document:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      filename:
+                        type: string
+                      type:
+                        type: string
+                      extracted_text:
+                        type: string
+                      summary:
+                        type: string
+                      structured_data:
+                        type: object
+                      project:
+                        type: string
+                      created_at:
+                        type: string
+
+  /linkDocumentToProject:
+    post:
+      operationId: linkDocumentToProject
+      summary: Link a document to a project
+      description: Associates an existing document with a project for organization. Use when a user says "file this under Oak St" or "link that permit to Pine St".
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - document_id
+              properties:
+                document_id:
+                  type: string
+                  description: The ID of the document to link
+                project_id:
+                  type: string
+                  description: The ID of the project
+                project_name:
+                  type: string
+                  description: The name of the project (used if project_id not provided)
+      responses:
+        '200':
+          description: Document linked successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  document_id:
+                    type: string
+                  project_id:
+                    type: string
+
+  /listDocumentsByProject:
+    get:
+      operationId: listDocumentsByProject
+      summary: List all documents for a project
+      description: Returns all documents associated with a specific project. Use when a user asks "show me all docs for Oak St" or "what files do we have for the Miller job".
+      parameters:
+        - name: project_id
+          in: query
+          schema:
+            type: string
+          description: The ID of the project
+        - name: project_name
+          in: query
+          schema:
+            type: string
+          description: The name of the project (used if project_id not provided)
+        - name: document_type
+          in: query
+          schema:
+            type: string
+            enum: [permit, invoice, receipt, photo, insurance_scope, change_order]
+          description: Filter by document type
+      responses:
+        '200':
+          description: List of documents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        filename:
+                          type: string
+                        type:
+                          type: string
+                        summary:
+                          type: string
+                        created_at:
+                          type: string
+                  count:
+                    type: integer

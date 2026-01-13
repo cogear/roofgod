@@ -12,12 +12,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Separator } from "@/components/ui/separator";
 import { SignOutButton } from "@/components/dashboard/sign-out-button";
+import { RealtimeBanner } from "@/components/dashboard/realtime-banner";
 
 const navItems = [
   { href: "/dashboard", label: "Overview" },
   { href: "/dashboard/tenants", label: "Tenants" },
   { href: "/dashboard/conversations", label: "Conversations" },
   { href: "/dashboard/documents", label: "Documents" },
+  { href: "/dashboard/analytics", label: "Analytics" },
   { href: "/dashboard/settings", label: "Settings" },
 ];
 
@@ -90,6 +92,9 @@ export default async function DashboardLayout({
       <main className="flex-1 container mx-auto px-4 py-6">
         {children}
       </main>
+
+      {/* Realtime Updates Banner */}
+      <RealtimeBanner />
 
       {/* Footer */}
       <Separator />
