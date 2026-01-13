@@ -34,18 +34,12 @@ export class RoofGodStack extends cdk.Stack {
       },
     });
 
-    // WhatsApp credentials (from AWS End User Messaging)
-    const whatsappSecret = new secretsmanager.Secret(this, "WhatsAppSecret", {
-      secretName: "roofgod/whatsapp",
-      description: "WhatsApp Business API credentials",
-      generateSecretString: {
-        secretStringTemplate: JSON.stringify({
-          phone_number_id: "YOUR_WHATSAPP_PHONE_NUMBER_ID",
-          access_token: "YOUR_WHATSAPP_ACCESS_TOKEN",
-        }),
-        generateStringKey: "placeholder",
-      },
-    });
+    // WhatsApp credentials - import existing secret (already configured)
+    const whatsappSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "WhatsAppSecret",
+      "roofgod/whatsapp"
+    );
 
     // Gmail OAuth credentials
     const gmailSecret = new secretsmanager.Secret(this, "GmailSecret", {
